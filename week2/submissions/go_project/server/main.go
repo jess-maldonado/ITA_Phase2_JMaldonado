@@ -4,11 +4,14 @@ import (
 	"database/sql"
 	"fmt"
 	"io/ioutil"
+	"log"
 	"net/http"
+	"os"
 	"strings"
 
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/gorilla/mux"
+	"github.com/joho/godotenv"
 	"github.com/tidwall/gjson"
 )
 
@@ -32,6 +35,12 @@ func main() {
 	// }
 	// db = database
 	// defer db.Close()
+
+	// Getting environment variables that are secret
+	err := godotenv.Load("week2.env")
+	if err != nil {
+		log.Fatal("Error loading .env file")
+	}
 
 	// Setting up a mux router
 	router := mux.NewRouter()
@@ -57,8 +66,9 @@ func main() {
 // }
 
 func getSingleAuthor(w http.ResponseWriter, r *http.Request) {
-	baseurl := "https://www.googleapis.com/books/v1/volumes?key=AIzaSyD340fMSTN7ioq-D5K69_qsx7W42-GqsUs&q=inauthor:"
+	apiKey := os.Getenv("GBOOKS_API_KEY")
 	author := parseAuthor(r)
+	baseurl := fmt.Sprintf("https://www.googleapis.com/books/v1/volumes?key=%s&q=inauthor:%s", apiKey, author)
 	fmt.Println(author)
 	fmt.Println(author)
 	url := baseurl + "\"" + author + "\""
