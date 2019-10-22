@@ -2,7 +2,9 @@ package main
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
+	"hash/fnv"
 	"io/ioutil"
 	"log"
 	"net/http"
@@ -12,41 +14,49 @@ import (
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/gorilla/mux"
 	"github.com/joho/godotenv"
-	"github.com/tidwall/gjson"
 )
 
 var port = "8080"
 var db *sql.DB
 
-// Book will hold the books
-type Book struct {
-	Title     string
-	Author    string
-	Publisher string
+// VolumeInfo is nested inside of Items
+type VolumeInfo struct {
+	Title     string   `json:"title"`
+	Author    []string `json:"authors"`
+	Publisher string   `json:"publisher"`
+}
+
+// Items is inside an object in an array
+type Items struct {
+	VolumeInfo VolumeInfo `json:"volumeInfo"`
+}
+
+// Books will hold all of the items we want.
+type Books struct {
+	Items []Items
 }
 
 func main() {
-	// Connecting to the MySQL database
-	// How do I deal with secrets?
-	// DATABASE STUFF, NOT THERE YET
-	// database, err := sql.Open("mysql", "jessica:password@tcp(db:3306)/ita")
-	// if err != nil {
-	// 	panic(err)
-	// }
-	// db = database
-	// defer db.Close()
-
 	// Getting environment variables that are secret
 	err := godotenv.Load("week2.env")
 	if err != nil {
 		log.Fatal("Error loading .env file")
 	}
 
+	// Connecting to the MySQL database
+	pw := os.Getenv("MYSQL_PASSWORD")
+	ds := fmt.Sprintf("jessica:%s@tcp(db:3306)/ita", pw)
+	database, err := sql.Open("mysql", ds)
+	if err != nil {
+		panic(err)
+	}
+	fmt.Println("successfully connected to db")
+	db = database
+	defer db.Close()
 	// Setting up a mux router
 	router := mux.NewRouter()
 
 	// Telling the server what to listen for and what to do
-	router.HandleFunc("/", homepage)
 	router.HandleFunc("/api/author/{id}", getSingleAuthor)
 	router.HandleFunc("/", homepage)
 	//router.HandleFunc("/", getAuthor)
@@ -69,20 +79,93 @@ func getSingleAuthor(w http.ResponseWriter, r *http.Request) {
 	apiKey := os.Getenv("GBOOKS_API_KEY")
 	author := parseAuthor(r)
 	baseurl := fmt.Sprintf("https://www.googleapis.com/books/v1/volumes?key=%s&q=inauthor:%s", apiKey, author)
-	fmt.Println(author)
-	fmt.Println(author)
-	url := baseurl + "\"" + author + "\""
-	fmt.Println(url)
-	resp, err := getRequest(url)
+	// Getting response from the API
+	resp, err := getJSON(baseurl)
 	if err != nil {
 		panic(err)
 	}
-	parseJSON(resp)
+	// Parsing the response
+	books := parseJSON(resp)
+	for _, v := range []string{"books", "authors", "publishers"} {
+		a, err := db.Exec(insertBookData(books, v))
+		if err != nil {
+			fmt.Printf("Error: %e", err)
+		}
+		fmt.Println(a)
+	}
 	fmt.Println("single author api run")
 }
 
-// To build request
-func getRequest(url string) (string, error) {
+// insertBooks will take in the Book and produce a query string that can be used to insert into database
+
+// This will allow us to generate a hash based on whatever string is inserted
+// In a db, it's more efficient to join on integers, and since we are creating 2 junction tables
+// for author-book and publisher-book, you have to join to get any relational information.
+// This is probably not the best way to do it, but it's a way to use integers to join instead of strings
+func generateHash(s string) uint32 {
+	h := fnv.New32a()
+	h.Write([]byte(s))
+	bs := h.Sum32()
+	return bs
+}
+
+func insertBookData(b Books, table string) string {
+	var name string
+	var val string
+	//var hash uint32
+	var vs []string
+	// // Depending on the table, the id has a different name
+	//	dataArr := make(map[string]string)
+
+	for _, s := range b.Items {
+		switch {
+		case table == "books":
+			name = "title"
+			val = s.VolumeInfo.Title
+		case table == "authors":
+			name = "author"
+			val = strings.Join(s.VolumeInfo.Author, ", ")
+		case table == "publishers":
+			name = "publisher"
+			val = s.VolumeInfo.Publisher
+		}
+		vs = append(vs, fmt.Sprintf("(\"%s\" , %v) ", val, generateHash(val)))
+	}
+
+	stmt, err := db.Prepare("INSERT IGNORE INTO ? (?, ?_id) values ?;")
+	if err != nil {
+		fmt.Println("hello")
+		log.Fatal(err)
+	}
+	fmt.Println("db prepared")
+	res, err := stmt.Exec(table, name, name, strings.Join(vs, ","))
+	if err != nil {
+		fmt.Println("hello world")
+		log.Fatal(err)
+	}
+	rowCnt, err := res.RowsAffected()
+	if err != nil {
+		log.Fatal(err)
+	}
+	return fmt.Sprintf("%v new rows successfully added.", rowCnt)
+}
+
+// parseJson takes the byte slice of the JSON and returns a Book data type
+// The Book holds a slice of all the books returned
+func parseJSON(b []byte) Books {
+	var books Books
+	err := json.Unmarshal(b, &books)
+	if err != nil {
+		fmt.Println(err)
+	} else {
+		fmt.Println("no error")
+	}
+
+	return books
+}
+
+// To build request and return a byte slice that can be unmarshaled
+func getJSON(url string) ([]byte, error) {
 	// Running a get request for the passed URL. Panic if error.
 	res, err := http.Get(url)
 	if err != nil {
@@ -96,18 +179,7 @@ func getRequest(url string) (string, error) {
 		panic(err)
 	}
 	// Turning byte slice body into string and return to be used with gjson parsing
-	bodyString := string(body)
-	return bodyString, nil
-}
-
-func parseJSON(body string) {
-
-	for i := 0; i < 10; i++ {
-		get := fmt.Sprintf("items.%d.volumeInfo.title", i)
-		title := gjson.Get(body, get)
-		fmt.Println(title)
-	}
-
+	return body, nil
 }
 
 func parseAuthor(r *http.Request) string {
@@ -115,11 +187,6 @@ func parseAuthor(r *http.Request) string {
 	s2 := strings.Split(s, "/")
 	author := s2[len(s2)-1]
 	return author
-
-	// params := mux.Vars(r)
-	// author := params["author"]
-	// fmt.Println(author)
-	// return author
 }
 
 func homepage(w http.ResponseWriter, r *http.Request) {
