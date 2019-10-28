@@ -30,6 +30,7 @@ type Books struct {
 	Items []Items
 }
 
+// getAuthors will run the getSingleAuthor function for every author (for when there are multiple authors)
 func getAuthors(w http.ResponseWriter, r *http.Request) {
 	setHeaders(w, r, host)
 	apiKey := os.Getenv("GBOOKS_API_KEY")
@@ -46,11 +47,12 @@ func getSingleAuthor(apiKey string, author string) {
 	// Getting response from the API
 	resp, err := getJSON(baseurl)
 	if err != nil {
-		panic(err)
+		log.Fatal(err)
 	}
 	// Parsing the response
 	books := parseJSON(resp)
 	tables := []string{"books", "authors", "publishers"}
+	// Inserting data to the book, author, and publisher tables
 	for _, v := range tables {
 		qsCreate, qsInsert, _ := books.insertBookData(v)
 		// Creating tables if they don't exist - this will stop us from getting tables don't exist error.
@@ -60,7 +62,7 @@ func getSingleAuthor(apiKey string, author string) {
 		}
 		fmt.Println(fmt.Sprintf("%v new rows inserted into table %s for author %s .", r, v, author))
 	}
-
+	// Inserting data in the junction tables
 	for _, v := range []string{"publisher", "author"} {
 		qsCreate, qsInsert := insertJunctionData(books, v)
 		r, err := runQueries(qsCreate, qsInsert)
@@ -72,6 +74,7 @@ func getSingleAuthor(apiKey string, author string) {
 	}
 }
 
+// Executing the queries - create if not exists first, and then inserting. Returns rows affected.
 func runQueries(qsCreate string, qsInsert string) (int64, error) {
 	a, err := db.Exec(qsCreate)
 	if err != nil {
@@ -97,7 +100,7 @@ func generateHash(s string) uint32 {
 	return bs
 }
 
-// insertBooks will take in the Book and produce a query string that can be used to insert into database
+// insertBooks will take in the Book object and produce a query string that can be used to insert into database
 func (b Books) insertBookData(table string) (string, string, map[string][]uint32) {
 	var name string
 	var val string
@@ -105,9 +108,9 @@ func (b Books) insertBookData(table string) (string, string, map[string][]uint32
 	var vs []string
 	junctionMap := make(map[string][]uint32)
 	var junctionVal []uint32
+
 	// // Depending on the table, the id has a different name
 	//	dataArr := make(map[string]string)
-
 	for _, s := range b.Items {
 		switch {
 		case table == "books":
@@ -132,18 +135,19 @@ func (b Books) insertBookData(table string) (string, string, map[string][]uint32
 }
 
 func insertJunctionData(b Books, t string) (string, string) {
+	// Getting all of the title data because both author & publisher will need to tie to books
 	_, _, titles := b.insertBookData("books")
 	q := t + "s"
-	// getting the map for the given string
+	// getting the map for the given string (author or publisher)
 	_, _, junction := b.insertBookData(q)
 	// Create table if not exists so there are no 'table does not exist' errors
 	qsCreate := fmt.Sprintf("CREATE TABLE IF NOT EXISTS books_%ss (title_id BIGINT, %s_id VARCHAR(255), PRIMARY KEY (title_id, %s_id));", t, t, t)
 	// Creating the string of two IDs in separate maps that will be used in the query string
 	var booksJunction []string
 	for i, v := range titles["title"] {
+		// value of map key "title" is the hash created; the junction[t][i] represents the hash value created for the author or publisher
 		booksJunction = append(booksJunction, fmt.Sprintf("(%v, %v)", v, junction[t][i]))
 	}
-
 	qsInsert := fmt.Sprintf("INSERT IGNORE INTO books_%ss (title_id, %s_id) values %s;", t, t, strings.Join(booksJunction, " , "))
 
 	return qsCreate, qsInsert
@@ -167,13 +171,11 @@ func getJSON(url string) ([]byte, error) {
 	res, err := http.Get(url)
 	if err != nil {
 		fmt.Println(err)
-		panic(err)
 	}
 	// Turning the response body into a byte slice so it can be used
 	body, err := ioutil.ReadAll(res.Body)
 	if err != nil {
 		fmt.Println(err)
-		panic(err)
 	}
 	// Turning byte slice body into string and return to be used with gjson parsing
 	return body, nil
