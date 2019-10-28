@@ -56,5 +56,4 @@ func main() {
 func setHeaders(w http.ResponseWriter, r *http.Request, host string) {
 	w.Header().Set("Access-Control-Allow-Origin", fmt.Sprintf("http://%s", clientHost))
 	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Content-Type", "text/html")
 }
