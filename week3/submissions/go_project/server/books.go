@@ -51,23 +51,41 @@ func getSingleAuthor(apiKey string, author string) {
 	}
 	// Parsing the response
 	books := parseJSON(resp)
-	tables := []string{"books", "authors", "publishers"}
-	// Inserting data to the book, author, and publisher tables
-	for _, v := range tables {
-		qsCreate, qsInsert, _ := books.insertBookData(v)
-		// Creating tables if they don't exist - this will stop us from getting tables don't exist error.
-		r, err := runQueries(qsCreate, qsInsert)
-		if err != nil {
-			log.Fatal(err)
-		}
-		fmt.Println(fmt.Sprintf("%v new rows inserted into table %s for author %s .", r, v, author))
+	var qsCreateBook, qsBookInsert, qsCreateAuthor, qsAuthorInsert, qsCreatePub, qsPubInsert string
+	junctionID := make(map[string][]uint32)
+
+	// Generating queries & adding to the map
+	qsCreateBook, qsBookInsert, junctionID["title"] = books.generateBookQueries()
+	qsCreateAuthor, qsAuthorInsert, junctionID["author"] = books.generateAuthorQueries()
+	qsCreatePub, qsPubInsert, junctionID["publisher"] = books.generatePublisherQueries()
+
+	// Running book queries & printing error or success
+	r, err := runQueries(qsCreateBook, qsBookInsert)
+	if err != nil {
+		log.Println(err)
 	}
-	// Inserting data in the junction tables
-	for _, v := range []string{"publisher", "author"} {
-		qsCreate, qsInsert := insertJunctionData(books, v)
+	fmt.Println(fmt.Sprintf("%v new rows inserted into table books for author %s .", r, author))
+
+	// Running author queries & printing error or success
+	r, err = runQueries(qsCreateAuthor, qsAuthorInsert)
+	if err != nil {
+		log.Println(err)
+	}
+	fmt.Println(fmt.Sprintf("%v new rows inserted into table authors for author %s .", r, author))
+
+	// Running publisher queries & printing error or success
+	r, err = runQueries(qsCreatePub, qsPubInsert)
+	if err != nil {
+		log.Println(err)
+	}
+	fmt.Println(fmt.Sprintf("%v new rows inserted into table publishers for author %s .", r, author))
+
+	// Running insert junction table queries
+	for _, v := range [2]string{"publisher", "author"} {
+		qsCreate, qsInsert := insertJunctionData(v, junctionID)
 		r, err := runQueries(qsCreate, qsInsert)
 		if err != nil {
-			log.Fatal(err)
+			log.Println(err)
 		}
 		fmt.Println(fmt.Sprintf("%v new rows inserted into table books_%ss.", r, v))
 
@@ -100,57 +118,84 @@ func generateHash(s string) uint32 {
 	return bs
 }
 
-// insertBooks will take in the Book object and produce a query string that can be used to insert into database
-func (b Books) insertBookData(table string) (string, string, map[string][]uint32) {
-	var name string
-	var val string
-	//var hash uint32
+// generateBookQueries creates the necessary queries for populating the books table
+func (b Books) generateBookQueries() (string, string, []uint32) {
 	var vs []string
-	junctionMap := make(map[string][]uint32)
-	var junctionVal []uint32
-
-	// // Depending on the table, the id has a different name
-	//	dataArr := make(map[string]string)
+	var titleHashes []uint32
+	name := "title"
 	for _, s := range b.Items {
-		switch {
-		case table == "books":
-			name = "title"
-			val = s.VolumeInfo.Title
-		case table == "authors":
-			name = "author"
-			val = strings.Join(s.VolumeInfo.Author, ", ")
-		case table == "publishers":
-			name = "publisher"
-			val = s.VolumeInfo.Publisher
-		}
+		val := s.VolumeInfo.Title
 		vs = append(vs, fmt.Sprintf("(\"%s\" , %v) ", val, generateHash(val)))
-		junctionVal = append(junctionVal, generateHash(val))
-		junctionMap[name] = junctionVal
+		titleHashes = append(titleHashes, generateHash(val))
 	}
 
-	// Query string
-	qsInsert := fmt.Sprintf("INSERT IGNORE INTO %s (%s, %s_id) values %s;", table, name, name, strings.Join(vs, ","))
-	qsCreate := fmt.Sprintf("CREATE TABLE IF NOT EXISTS %s (%s_id BIGINT,%s VARCHAR(255),PRIMARY KEY (%s_id));", table, name, name, name)
-	return qsCreate, qsInsert, junctionMap
+	qsInsert := fmt.Sprintf("INSERT IGNORE INTO books (%s, %s_id) values %s;", name, name, strings.Join(vs, ","))
+	qsCreate := fmt.Sprintf("CREATE TABLE IF NOT EXISTS books (%s_id BIGINT,%s VARCHAR(255),PRIMARY KEY (%s_id));", name, name, name)
+	return qsCreate, qsInsert, titleHashes
 }
 
-func insertJunctionData(b Books, t string) (string, string) {
-	// Getting all of the title data because both author & publisher will need to tie to books
-	_, _, titles := b.insertBookData("books")
-	q := t + "s"
-	// getting the map for the given string (author or publisher)
-	_, _, junction := b.insertBookData(q)
-	// Create table if not exists so there are no 'table does not exist' errors
-	qsCreate := fmt.Sprintf("CREATE TABLE IF NOT EXISTS books_%ss (title_id BIGINT, %s_id VARCHAR(255), PRIMARY KEY (title_id, %s_id));", t, t, t)
-	// Creating the string of two IDs in separate maps that will be used in the query string
-	var booksJunction []string
-	for i, v := range titles["title"] {
-		// value of map key "title" is the hash created; the junction[t][i] represents the hash value created for the author or publisher
-		booksJunction = append(booksJunction, fmt.Sprintf("(%v, %v)", v, junction[t][i]))
+// generateAuthorQueries creates the necessary queries for populating the author table
+func (b Books) generateAuthorQueries() (string, string, []uint32) {
+	var vs []string
+	var authorHashes []uint32
+	name := "author"
+	for _, s := range b.Items {
+		val := strings.Join(s.VolumeInfo.Author, ", ")
+		vs = append(vs, fmt.Sprintf("(\"%s\" , %v) ", val, generateHash(val)))
+		authorHashes = append(authorHashes, generateHash(val))
 	}
-	qsInsert := fmt.Sprintf("INSERT IGNORE INTO books_%ss (title_id, %s_id) values %s;", t, t, strings.Join(booksJunction, " , "))
+
+	qsInsert := fmt.Sprintf("INSERT IGNORE INTO authors (%s, %s_id) values %s;", name, name, strings.Join(vs, ","))
+	qsCreate := fmt.Sprintf("CREATE TABLE IF NOT EXISTS authors (%s_id BIGINT,%s VARCHAR(255),PRIMARY KEY (%s_id));", name, name, name)
+	return qsCreate, qsInsert, authorHashes
+
+}
+
+// generatePublisherQueries creates the necessary queries for populating the publisher table
+func (b Books) generatePublisherQueries() (string, string, []uint32) {
+	var vs []string
+	var pubHashes []uint32
+	name := "publisher"
+	for _, s := range b.Items {
+		val := s.VolumeInfo.Publisher
+		vs = append(vs, fmt.Sprintf("(\"%s\" , %v) ", val, generateHash(val)))
+		pubHashes = append(pubHashes, generateHash(val))
+	}
+
+	qsInsert := fmt.Sprintf("INSERT IGNORE INTO publishers (%s, %s_id) values %s;", name, name, strings.Join(vs, ","))
+	qsCreate := fmt.Sprintf("CREATE TABLE IF NOT EXISTS publishers (%s_id BIGINT,%s VARCHAR(255),PRIMARY KEY (%s_id));", name, name, name)
+	return qsCreate, qsInsert, pubHashes
+}
+
+// func insertJunctionData(b Books, t string) (string, string) {
+// 	// Getting all of the title data because both author & publisher will need to tie to books
+// 	_, _, titles := b.insertBookData("books")
+// 	q := t + "s"
+// 	// getting the map for the given string (author or publisher)
+// 	_, _, junction := b.insertBookData(q)
+// 	// Create table if not exists so there are no 'table does not exist' errors
+// 	qsCreate := fmt.Sprintf("CREATE TABLE IF NOT EXISTS books_%ss (title_id BIGINT, %s_id VARCHAR(255), PRIMARY KEY (title_id, %s_id));", t, t, t)
+// 	// Creating the string of two IDs in separate maps that will be used in the query string
+// 	var booksJunction []string
+// 	for i, v := range titles["title"] {
+// 		// value of map key "title" is the hash created; the junction[t][i] represents the hash value created for the author or publisher
+// 		booksJunction = append(booksJunction, fmt.Sprintf("(%v, %v)", v, junction[t][i]))
+// 	}
+// 	qsInsert := fmt.Sprintf("INSERT IGNORE INTO books_%ss (title_id, %s_id) values %s;", t, t, strings.Join(booksJunction, " , "))
+
+// 	return qsCreate, qsInsert
+// }
+
+func insertJunctionData(other string, m map[string][]uint32) (string, string) {
+	var booksJunction []string
+	for i, v := range m["title"] {
+		booksJunction = append(booksJunction, fmt.Sprintf("(%v, %v)", v, m[other][i]))
+	}
+	qsCreate := fmt.Sprintf("CREATE TABLE IF NOT EXISTS books_%ss (title_id BIGINT, %s_id VARCHAR(255), PRIMARY KEY (title_id, %s_id));", other, other, other)
+	qsInsert := fmt.Sprintf("INSERT IGNORE INTO books_%ss (title_id, %s_id) values %s;", other, other, strings.Join(booksJunction, " , "))
 
 	return qsCreate, qsInsert
+
 }
 
 // parseJson takes the byte slice of the JSON and returns a Book data type
